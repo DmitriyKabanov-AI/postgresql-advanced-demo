@@ -1,0 +1,88 @@
+﻿services:
+  db:
+    build:
+      context: .
+      dockerfile: Dockerfile.db
+    container_name: postgresql-advanced-demo-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_pass
+      POSTGRES_DB: demo
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./01_init.sql:/docker-entrypoint-initdb.d/01_init.sql
+      - ./dwh_setup.sql:/docker-entrypoint-initdb.d/02_dwh.sql
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d demo"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile.pgtap
+    container_name: postgresql-advanced-demo-test
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGUSER: postgres
+      PGDATABASE: demo
+      PGPASSWORD: postgres_pass
+      PGPORT: 5432
+    volumes:
+      - ./tests:/tests
+    command: sh -c "pg_prove -h db -U postgres -d demo /tests/*.sql"
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    container_name: postgresql-advanced-demo-exporter
+    environment:
+      DATA_SOURCE_NAME: "postgresql://postgres:postgres_pass@db:5432/demo?sslmode=disable"
+    ports:
+      - "9187:9187"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: postgresql-advanced-demo-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    depends_on:
+      - postgres-exporter
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: postgresql-advanced-demo-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_INSTALL_PLUGINS=grafana-postgresql-datasource
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./provisioning:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+      - db
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  prometheus_data:
+  grafana_data:
